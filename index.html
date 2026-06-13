@@ -88,6 +88,27 @@
   .sign-actions{display:flex; gap:8px; margin-top:6px;}
   .sign-actions button{flex:1; padding:8px; font-size:12px;}
 
+  /* Signature modal */
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:300;
+    display:none; flex-direction:column; padding:14px;
+  }
+  .modal-overlay.show{display:flex;}
+  .modal-box{
+    background:#fff; border-radius:10px; padding:14px; flex:1;
+    display:flex; flex-direction:column; min-height:0;
+  }
+  .modal-box h3{margin:0 0 10px; font-size:15px; color:var(--primary);}
+  #sigModalCanvas{
+    flex:1; width:100%; min-height:0; border:1px dashed #aaa; border-radius:6px;
+    touch-action:none; background:#fff;
+  }
+  .modal-actions{display:flex; gap:8px; margin-top:10px;}
+  .modal-actions button{flex:1;}
+
+  /* Photo observations */
+  .photo-fields label{margin:0 0 2px; font-size:11px;}
+
   /* Progress / status */
   #statusMsg{
     font-size:13px; text-align:center; margin-top:10px; color:#444; min-height:18px;
@@ -202,6 +223,7 @@
       <canvas class="sigpad" id="sigConstructora"></canvas>
       <div class="sign-actions">
         <button class="outline" type="button" data-clear="sigConstructora">Borrar firma</button>
+        <button class="outline" type="button" data-expand="sigConstructora" data-title="LA CONSTRUCTORA">🔍 Ampliar para firmar</button>
       </div>
     </div>
 
@@ -215,6 +237,7 @@
       <canvas class="sigpad" id="sigPropiedad"></canvas>
       <div class="sign-actions">
         <button class="outline" type="button" data-clear="sigPropiedad">Borrar firma</button>
+        <button class="outline" type="button" data-expand="sigPropiedad" data-title="LA PROPIEDAD">🔍 Ampliar para firmar</button>
       </div>
     </div>
 
@@ -228,6 +251,7 @@
       <canvas class="sigpad" id="sigDireccion"></canvas>
       <div class="sign-actions">
         <button class="outline" type="button" data-clear="sigDireccion">Borrar firma</button>
+        <button class="outline" type="button" data-expand="sigDireccion" data-title="DIRECCIÓN DE OBRA">🔍 Ampliar para firmar</button>
       </div>
     </div>
 
@@ -241,6 +265,7 @@
       <canvas class="sigpad" id="sigEjecucion"></canvas>
       <div class="sign-actions">
         <button class="outline" type="button" data-clear="sigEjecucion">Borrar firma</button>
+        <button class="outline" type="button" data-expand="sigEjecucion" data-title="DIRECCIÓN DE EJECUCIÓN">🔍 Ampliar para firmar</button>
       </div>
     </div>
   </div>
@@ -265,6 +290,19 @@
     </div>
   </div>
 
+</div>
+
+<!-- MODAL FIRMA AMPLIADA -->
+<div class="modal-overlay" id="sigModal">
+  <div class="modal-box">
+    <h3 id="sigModalTitle">Firma</h3>
+    <canvas id="sigModalCanvas"></canvas>
+    <div class="modal-actions">
+      <button class="outline" id="sigModalClear" type="button">Borrar</button>
+      <button class="secondary" id="sigModalClose" type="button">Cancelar</button>
+      <button class="green" id="sigModalSave" type="button">Guardar firma</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -590,8 +628,12 @@ function renderPhotos(){
     const fields = document.createElement('div');
     fields.className = 'photo-fields';
 
+    const obsLabel = document.createElement('label');
+    obsLabel.textContent = 'Observaciones';
+    fields.appendChild(obsLabel);
+
     const ta = document.createElement('textarea');
-    ta.placeholder = 'Descripción de la foto ' + (idx+1);
+    ta.placeholder = 'Escribe aquí las observaciones de la foto ' + (idx+1);
     ta.value = p.desc;
     ta.addEventListener('input', () => { p.desc = ta.value; });
     fields.appendChild(ta);
@@ -703,6 +745,20 @@ class SignaturePad{
     if(!this.hasInk) return null;
     return this.canvas.toDataURL('image/png').split(',')[1];
   }
+  loadFromDataUrl(dataUrl){
+    return new Promise((resolve) => {
+      const rect = this.canvas.getBoundingClientRect();
+      this.ctx.clearRect(0, 0, rect.width, rect.height);
+      if(!dataUrl){ this.hasInk = false; resolve(); return; }
+      const img = new Image();
+      img.onload = () => {
+        this.ctx.drawImage(img, 0, 0, rect.width, rect.height);
+        this.hasInk = true;
+        resolve();
+      };
+      img.src = dataUrl;
+    });
+  }
 }
 
 SIG_IDS.forEach(id => {
@@ -714,6 +770,52 @@ document.querySelectorAll('[data-clear]').forEach(btn => {
   btn.addEventListener('click', () => {
     sigPads[btn.getAttribute('data-clear')].clear();
   });
+});
+
+//=====================================================================
+// SIGNATURE MODAL (ampliar para firmar)
+//=====================================================================
+const sigModal = document.getElementById('sigModal');
+const sigModalCanvas = document.getElementById('sigModalCanvas');
+const sigModalPad = new SignaturePad(sigModalCanvas);
+let currentSigId = null;
+
+document.querySelectorAll('[data-expand]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    currentSigId = btn.getAttribute('data-expand');
+    document.getElementById('sigModalTitle').textContent = 'Firma - ' + btn.getAttribute('data-title');
+    sigModal.classList.add('show');
+    // wait for layout so the canvas has real dimensions
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    sigModalPad.resize();
+    sigModalPad.clear();
+    const pad = sigPads[currentSigId];
+    if(pad.hasInk){
+      await sigModalPad.loadFromDataUrl(pad.canvas.toDataURL('image/png'));
+    }
+  });
+});
+
+document.getElementById('sigModalClear').addEventListener('click', () => {
+  sigModalPad.clear();
+});
+
+document.getElementById('sigModalClose').addEventListener('click', () => {
+  sigModal.classList.remove('show');
+  currentSigId = null;
+});
+
+document.getElementById('sigModalSave').addEventListener('click', async () => {
+  if(currentSigId){
+    const pad = sigPads[currentSigId];
+    if(sigModalPad.hasInk){
+      await pad.loadFromDataUrl(sigModalCanvas.toDataURL('image/png'));
+    } else {
+      pad.clear();
+    }
+  }
+  sigModal.classList.remove('show');
+  currentSigId = null;
 });
 </script>
 
