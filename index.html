@@ -595,18 +595,36 @@ let photos = []; // {id, dataUrl, desc, lat, lon, ts}
 let photoSeq = 0;
 
 function compressImage(file, maxW, quality){
+  const TARGET_RATIO = 4 / 3; // ancho/alto fijo para todas las fotos del informe
   return new Promise((resolve, reject) => {
     const img = new Image();
     const reader = new FileReader();
     reader.onload = (e) => { img.src = e.target.result; };
     reader.onerror = reject;
     img.onload = () => {
-      let w = img.width, h = img.height;
-      if(w > maxW){ h = Math.round(h * maxW / w); w = maxW; }
+      const srcW = img.width, srcH = img.height;
+      const srcRatio = srcW / srcH;
+
+      // Calcular recorte "cover" para forzar la relación TARGET_RATIO sin deformar
+      let cropW = srcW, cropH = srcH, cropX = 0, cropY = 0;
+      if(srcRatio > TARGET_RATIO){
+        // imagen más ancha de lo necesario -> recortar laterales
+        cropW = Math.round(srcH * TARGET_RATIO);
+        cropX = Math.round((srcW - cropW) / 2);
+      } else if(srcRatio < TARGET_RATIO){
+        // imagen más alta de lo necesario -> recortar arriba/abajo
+        cropH = Math.round(srcW / TARGET_RATIO);
+        cropY = Math.round((srcH - cropH) / 2);
+      }
+
+      let outW = maxW;
+      let outH = Math.round(outW / TARGET_RATIO);
+      if(cropW < outW){ outW = cropW; outH = Math.round(outW / TARGET_RATIO); }
+
       const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
+      canvas.width = outW; canvas.height = outH;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
+      ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
       resolve(canvas.toDataURL('image/jpeg', quality));
     };
     img.onerror = reject;
@@ -995,8 +1013,10 @@ document.getElementById('btnGenerate').addEventListener('click', async () => {
     document.body.appendChild(a); a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
 
-    setStatus('✅ Acta generada y descargada correctamente.');
+    setStatus('✅ Acta generada y descargada correctamente. El formulario se ha vaciado para una nueva acta.');
     document.getElementById('sendPanel').classList.add('show');
+
+    resetAllFields();
 
   }catch(err){
     console.error(err);
@@ -1040,6 +1060,216 @@ document.getElementById('btnShare').addEventListener('click', async () => {
     alert('Tu navegador no soporta compartir archivos directamente. El ZIP ya se ha descargado; adjúntalo manualmente desde tus archivos.');
   }
 });
+
+//=====================================================================
+// PERSISTENCIA (IndexedDB) - evita perder datos al recargar/cerrar
+//=====================================================================
+const TEXT_FIELD_IDS = [
+  'actaNum','fecha','hora','proyecto','direccion',
+  'repreEstudio','EmpConst','propiedad',
+  'estadoTrabajos','instrucciones','incidencias','tareas',
+  'nombreConstructora','dniConstructora',
+  'nombrePropiedad','dniPropiedad',
+  'nombreDireccion','dniDireccion',
+  'nombreEjecucion','dniEjecucion'
+];
+
+const DB_NAME = 'acta_visita_db';
+const DB_STORE = 'estado';
+const DB_KEY = 'borrador';
+let dbPromise = null;
+
+function openDB(){
+  if(dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(DB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+async function dbSave(data){
+  try{
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put(data, DB_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }catch(e){ console.warn('No se pudo guardar el borrador:', e); }
+}
+
+async function dbLoad(){
+  try{
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const req = tx.objectStore(DB_STORE).get(DB_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }catch(e){ console.warn('No se pudo cargar el borrador:', e); return null; }
+}
+
+async function dbClear(){
+  try{
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).delete(DB_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }catch(e){ console.warn('No se pudo borrar el borrador:', e); }
+}
+
+let saveTimer = null;
+let hasUnsavedWork = false;
+
+function scheduleSave(){
+  hasUnsavedWork = true;
+  if(saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(persistState, 400);
+}
+
+function persistState(){
+  const fields = {};
+  TEXT_FIELD_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) fields[id] = el.value;
+  });
+
+  const signatures = {};
+  SIG_IDS.forEach(id => {
+    const pad = sigPads[id];
+    signatures[id] = pad.hasInk ? pad.canvas.toDataURL('image/png') : null;
+  });
+
+  const data = {
+    fields,
+    photos: photos.map(p => ({ id: p.id, dataUrl: p.dataUrl, desc: p.desc, lat: p.lat, lon: p.lon, ts: p.ts })),
+    photoSeq,
+    mainGPS,
+    signatures,
+  };
+  dbSave(data);
+}
+
+async function restoreState(){
+  const data = await dbLoad();
+  if(!data) return;
+
+  // Campos de texto
+  if(data.fields){
+    TEXT_FIELD_IDS.forEach(id => {
+      const el = document.getElementById(id);
+      if(el && data.fields[id] != null) el.value = data.fields[id];
+    });
+  }
+
+  // Fotos
+  if(Array.isArray(data.photos) && data.photos.length){
+    photos = data.photos.map(p => ({ ...p }));
+    photoSeq = data.photoSeq || photos.length;
+    renderPhotos();
+  }
+
+  // GPS principal
+  if(data.mainGPS){
+    mainGPS = data.mainGPS;
+    const statusEl = document.getElementById('gpsStatus');
+    statusEl.textContent = `Ubicación restaurada (${mainGPS.lat.toFixed(5)}, ${mainGPS.lon.toFixed(5)}).`;
+    statusEl.className = 'gps-status ok';
+  }
+
+  // Firmas
+  if(data.signatures){
+    for(const id of SIG_IDS){
+      const dataUrl = data.signatures[id];
+      if(dataUrl){
+        await sigPads[id].loadFromDataUrl(dataUrl);
+        updateSigOverlay(id);
+      }
+    }
+  }
+
+  if(data.fields || (data.photos && data.photos.length)){
+    hasUnsavedWork = true;
+  }
+}
+
+// Guardar ante cualquier cambio en campos de texto
+TEXT_FIELD_IDS.forEach(id => {
+  const el = document.getElementById(id);
+  if(el) el.addEventListener('input', scheduleSave);
+});
+
+// Hook en renderPhotos / generación para forzar guardado tras cambios en fotos
+const originalRenderPhotos = renderPhotos;
+renderPhotos = function(){
+  originalRenderPhotos();
+  scheduleSave();
+};
+
+// Guardar tras tocar/guardar firmas
+document.getElementById('sigModalSave').addEventListener('click', scheduleSave);
+document.querySelectorAll('[data-clear]').forEach(btn => btn.addEventListener('click', scheduleSave));
+
+// Guardar ubicación principal cuando se obtiene por GPS
+const _origGPSBtn = document.getElementById('btnGPS');
+_origGPSBtn.addEventListener('click', () => { setTimeout(scheduleSave, 2000); });
+
+// Confirmación al salir/recargar si hay datos sin enviar
+window.addEventListener('beforeunload', (e) => {
+  if(hasUnsavedWork){
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
+
+// Restaurar al cargar
+restoreState();
+
+//=====================================================================
+// RESET TOTAL (tras generar el ZIP correctamente)
+//=====================================================================
+function resetAllFields(){
+  // Campos de texto (excepto fecha/hora que se reinicializan a "ahora")
+  TEXT_FIELD_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.value = '';
+  });
+  const now = new Date();
+  document.getElementById('fecha').value = now.toISOString().slice(0,10);
+  document.getElementById('hora').value = now.toTimeString().slice(0,5);
+
+  // GPS
+  mainGPS = null;
+  const statusEl = document.getElementById('gpsStatus');
+  statusEl.textContent = '';
+  statusEl.className = 'gps-status';
+
+  // Fotos
+  photos = [];
+  photoSeq = 0;
+  originalRenderPhotos();
+
+  // Firmas
+  SIG_IDS.forEach(id => {
+    sigPads[id].clear();
+    updateSigOverlay(id);
+  });
+
+  hasUnsavedWork = false;
+  dbClear();
+}
+
 </script>
 
 
