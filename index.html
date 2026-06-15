@@ -41,6 +41,7 @@
     font-size:14px; font-family:inherit; background:#fff;
   }
   textarea{min-height:64px; resize:vertical;}
+  input.field-error{border-color:var(--red); box-shadow:0 0 0 2px rgba(192,57,43,.15);}
   .row{display:flex; gap:8px;}
   .row > div{flex:1;}
   button{
@@ -152,8 +153,8 @@
     <h2>Datos generales</h2>
     <div class="row">
       <div>
-        <label>Acta nº</label>
-        <input type="text" id="actaNum" placeholder="Ej. 12">
+        <label>Acta nº <span style="color:var(--red);">*</span></label>
+        <input type="text" id="actaNum" placeholder="Ej. 12" required>
       </div>
       <div>
         <label>Fecha</label>
@@ -169,8 +170,8 @@
   <!-- PROYECTO Y UBICACION -->
   <div class="card">
     <h2>Proyecto y ubicación</h2>
-    <label>Identificación del proyecto</label>
-    <input type="text" id="proyecto" placeholder="Nombre / referencia del proyecto">
+    <label>Identificación del proyecto <span style="color:var(--red);">*</span></label>
+    <input type="text" id="proyecto" placeholder="Nombre / referencia del proyecto" required>
     <label>Dirección</label>
     <textarea id="direccion" placeholder="Dirección de la obra"></textarea>
     <div class="btn-row">
@@ -910,6 +911,21 @@ function setStatus(html){
 
 document.getElementById('btnGenerate').addEventListener('click', async () => {
   const btn = document.getElementById('btnGenerate');
+
+  // --- Validación de campos obligatorios ---
+  const actaNumEl = document.getElementById('actaNum');
+  const proyectoEl = document.getElementById('proyecto');
+  let missing = [];
+  actaNumEl.classList.remove('field-error');
+  proyectoEl.classList.remove('field-error');
+  if(!actaNumEl.value.trim()){ missing.push('Acta nº'); actaNumEl.classList.add('field-error'); }
+  if(!proyectoEl.value.trim()){ missing.push('Identificación del proyecto'); proyectoEl.classList.add('field-error'); }
+  if(missing.length){
+    alert('Faltan datos obligatorios:\n- ' + missing.join('\n- '));
+    (missing[0] === 'Acta nº' ? actaNumEl : proyectoEl).focus();
+    return;
+  }
+
   btn.disabled = true;
   document.getElementById('sendPanel').classList.remove('show');
   setStatus('<span class="spinner"></span>Generando documento...');
@@ -1013,10 +1029,12 @@ document.getElementById('btnGenerate').addEventListener('click', async () => {
     document.body.appendChild(a); a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
 
-    setStatus('✅ Acta generada y descargada correctamente. El formulario se ha vaciado para una nueva acta.');
+    setStatus('✅ Acta generada y descargada correctamente.');
     document.getElementById('sendPanel').classList.add('show');
 
+    alert('✅ Acta generada y descargada correctamente.\n\nPulsa OK para vaciar el formulario y comenzar una nueva acta.');
     resetAllFields();
+    setStatus('Formulario vacío, listo para una nueva acta. Puedes usar el panel de abajo para enviar el acta recién generada.');
 
   }catch(err){
     console.error(err);
@@ -1207,6 +1225,13 @@ async function restoreState(){
 TEXT_FIELD_IDS.forEach(id => {
   const el = document.getElementById(id);
   if(el) el.addEventListener('input', scheduleSave);
+});
+
+// Quitar resaltado de error al corregir los campos obligatorios
+['actaNum','proyecto'].forEach(id => {
+  document.getElementById(id).addEventListener('input', (e) => {
+    e.target.classList.remove('field-error');
+  });
 });
 
 // Hook en renderPhotos / generación para forzar guardado tras cambios en fotos
